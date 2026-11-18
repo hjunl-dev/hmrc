@@ -1,32 +1,93 @@
-use midir::{InitError, MidiIO, MidiInput, MidiOutput};
+use std::error::Error;
+use std::io::{self, Write};
+
+use midir::{Ignore, MidiIO, MidiInput, MidiInputPort};
 
 const CLIENT_NAME: &str = "hmrc";
 
-fn print_ports<T: MidiIO>(label: &str, io: &T) {
-    // ports() is a snapshot taken at the "moment of invocation."
-    // Must call this again (connect or disconnect a cable)
-    let ports = io.ports();
-    println!("[{}] {} port(s)", label, ports.len());
+fn main() -> Result<(), Box<dyn Error>> {
+    let mut midi_in = MidiInput::new(CLIENT_NAME)?;
 
-    if ports.is_empty() {
-        println!("IO (none) - check the USB cable and that the piano is powered on");
-        return;
-    }
+    midi_in.ignore(Ignore::None);
 
-    for (index, port) in ports.iter().enumerate() {
-        match io.port_name(port) {
-            Ok(name) => println!("{}: {}", index, name),
-            Err(e) => print!("{}: (unavailable: {})", index, e),
+    let port = select_port(&midi_in)?;
+    let port_name = midi_in.port_name(&port)?;
+    let mut last_stamp: Option<u64> = None;
+
+    let _conn = midi_in.connect(
+        &port,
+        "hmrc-input",
+        move |stamp_us, bytes, _| {
+            let delta_us = last_stamp.map_or(0, |prev| stamp_us.saturating_sub(prev));
+            last_stamp = Some(stamp_us);
+
+            println!(
+                "{:>12} us  (+{:>8} us)  {}",
+                stamp_us,
+                delta_us,
+                to_hex(bytes)
+            );
+        },
+        (),
+    )?;
+
+    println!("Connected to '{port_name}'. Play some keys. Press Enter to quit.");
+    wait_for_enter()?;
+
+    println!("Disconnected.");
+    Ok(())
+}
+
+fn select_port(midi_in: &MidiInput) -> Result<MidiInputPort, Box<dyn Error>> {
+    let ports = midi_in.ports();
+
+    match ports.len() {
+        0 => Err("no MIDI input port found (is the piano connected and powered on?)".into()),
+        1 => {
+            println!("Only one input port found. Selecting it automatically.");
+            Ok(ports[0].clone())
+        }
+        _ => {
+            print_ports("Input", midi_in);
+            print!("Select input port number: ");
+            io::stdout().flush()?;
+
+            let mut line = String::new();
+            io::stdin().read_line(&mut line)?;
+            let index: usize = line.trim().parse()?;
+
+            ports
+                .get(index)
+                .cloned()
+                .ok_or_else(|| format!("invalid port number: {index}").into())
         }
     }
 }
 
-fn main() -> Result<(), InitError> {
-    let midi_in = MidiInput::new(CLIENT_NAME)?;
-    let midi_out = MidiOutput::new(CLIENT_NAME)?;
+fn print_ports<T: MidiIO>(label: &str, io: &T) {
+    let ports = io.ports();
 
-    print_ports("Input", &midi_in);
-    print_ports("Output", &midi_out);
+    println!("[{label}] {} port(s)", ports.len());
 
+    for (index, port) in ports.iter().enumerate() {
+        match io.port_name(port) {
+            Ok(name) => println!("  {index}: {name}"),
+            Err(e) => println!("  {index}: <unavailable: {e}>"),
+        }
+    }
+}
+
+/// [0x90, 0x3C, 0x64] -> "90 3C 64"
+fn to_hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn wait_for_enter() -> io::Result<()> {
+    let mut line = String::new();
+    io::stdin().read_line(&mut line)?;
     Ok(())
 }
