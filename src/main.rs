@@ -1,7 +1,11 @@
+mod message;
+
 use std::error::Error;
 use std::io::{self, Write};
 
 use midir::{Ignore, MidiIO, MidiInput, MidiInputPort};
+
+use crate::message::MidiMessage;
 
 const CLIENT_NAME: &str = "hmrc";
 
@@ -18,15 +22,25 @@ fn main() -> Result<(), Box<dyn Error>> {
         &port,
         "hmrc-input",
         move |stamp_us, bytes, _| {
+            let parsed = MidiMessage::parse(bytes);
+
+            if matches!(parsed, Ok(MidiMessage::ActiveSensing)) {
+                return;
+            }
+
             let delta_us = last_stamp.map_or(0, |prev| stamp_us.saturating_sub(prev));
             last_stamp = Some(stamp_us);
 
-            println!(
-                "{:>12} us  (+{:>8} us)  {}",
-                stamp_us,
-                delta_us,
-                to_hex(bytes)
-            );
+            match parsed {
+                Ok(msg) => println!(
+                    "{stamp_us:>12} us  (+{delta_us:>8} us)  {:<9} {msg:?}",
+                    to_hex(bytes)
+                ),
+                Err(e) => println!(
+                    "{stamp_us:>12} us  (+{delta_us:>8} us)  {:<9} <parse error: {e}>",
+                    to_hex(bytes)
+                ),
+            }
         },
         (),
     )?;
